@@ -551,20 +551,29 @@ function parseCsv(text){
 }
 function guessCols(rows){
   var h = rows[0] || [], g = {d:-1,n:-1,a:-1,head:false};
+  // 日付
   var rD = /(利用日|ご利用日|日付|取引日|決済日|date)/i;
-  var rN = /(店名|利用店名|ご利用先|内容|摘要|品目|商品|明細|加盟店|利用先|説明)/i;
-  var rA = /(金額|利用金額|支払金額|請求額|ご利用金額|amount)/i;
-  h.forEach(function(v,i){
-    if(g.d < 0 && rD.test(v)) g.d = i;
-    if(g.n < 0 && rN.test(v)) g.n = i;
-    if(g.a < 0 && rA.test(v)) g.a = i;
-  });
+  // 品目：強い手がかり（店名そのもの）を優先し、弱い手がかり（内容・摘要）は後回し
+  var rN1 = /(取引先|利用店名|ご利用店名|ご利用先|加盟店|店名|商品名|利用先)/;
+  var rN2 = /(取引内容|内容|摘要|品目|明細|説明|備考)/;
+  // 金額：入金・残高・手数料・レート等は除外し、支出額を優先
+  var rAx = /(入金|残高|レート|ポイント|手数料|回数|海外)/;
+  var rA1 = /(出金金額|利用金額|ご利用金額|ご請求金額|支払金額|請求額|支払総額)/;
+  var rA2 = /(金額|amount)/i;
+
+  h.forEach(function(v,i){ if(g.d < 0 && rD.test(v)) g.d = i; });
+  h.forEach(function(v,i){ if(g.n < 0 && rN1.test(v)) g.n = i; });
+  if(g.n < 0) h.forEach(function(v,i){ if(g.n < 0 && rN2.test(v)) g.n = i; });
+  h.forEach(function(v,i){ if(g.a < 0 && !rAx.test(v) && rA1.test(v)) g.a = i; });
+  if(g.a < 0) h.forEach(function(v,i){ if(g.a < 0 && !rAx.test(v) && rA2.test(v)) g.a = i; });
+
   g.head = (g.d >= 0 || g.n >= 0 || g.a >= 0);
   if(!g.head){
+    // 見出し行なし（三井住友カード等）：1行目の中身から推定
     (rows[0]||[]).forEach(function(v,i){
       if(g.d < 0 && /^\d{2,4}[\/\-年]\d{1,2}[\/\-月]\d{1,2}/.test(v)) g.d = i;
-      else if(g.a < 0 && /^[¥\\]?-?[\d,]+$/.test(v) && v.replace(/\D/g,"").length > 1) g.a = i;
-      else if(g.n < 0 && v && !/^[\d,¥\\\-\/\.]+$/.test(v)) g.n = i;
+      else if(g.n < 0 && v && !/^[\d,¥\\\-\/\.]+$/.test(v) && !/^\d+回/.test(v) && !/^(本人|家族)/.test(v)) g.n = i;
+      else if(g.a < 0 && /^[¥\\]?-?[\d,]+$/.test(v) && v.replace(/\D/g,"").length > 0) g.a = i;
     });
   }
   if(g.n < 0) g.n = (g.d >= 0 ? g.d + 1 : 1);
@@ -586,7 +595,7 @@ function prevRefresh(){
   var skip = document.getElementById("map-head").checked ? 1 : 0;
   var data = rows.slice(skip).map(function(r){
     return {d: di >= 0 ? (r[di]||"") : "", n: ni >= 0 ? (r[ni]||"") : "", a: ai >= 0 ? num(r[ai]) : 0};
-  }).filter(function(x){ return x.a !== 0 || String(x.n).trim() !== ""; });
+  }).filter(function(x){ return x.a !== 0; });
   csvCtx.parsed = data;
 
   var tb = el("tbody");

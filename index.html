@@ -18,6 +18,7 @@
     --bar: 84px;
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  [hidden]{display:none !important}
   html,body{margin:0;padding:0}
   body{
     background:var(--bg); color:var(--ink);
@@ -150,6 +151,17 @@
   .prev table{width:100%;border-collapse:collapse}
   .prev td{padding:5px 8px;border-bottom:1px solid var(--line2);white-space:nowrap}
   .prev td.n{text-align:right;font-variant-numeric:tabular-nums}
+  .prevhead{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#f7f9fa;border-bottom:1px solid var(--line2);font-size:13px;position:sticky;top:0}
+  .prevhead b{font-size:16px;font-variant-numeric:tabular-nums}
+  .modebadge{font-size:11px;font-weight:500;color:var(--wife);background:var(--wife-bg);padding:2px 9px;border-radius:99px}
+  .chk{margin-top:12px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fbfcfd}
+  .chk-row{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px;padding:3px 0}
+  .chk-row b{font-size:16px;font-variant-numeric:tabular-nums}
+  .chk-row label{color:var(--sub)}
+  .chk-row input{font:inherit;font-size:16px;width:130px;text-align:right;border:1px solid var(--line);border-radius:8px;padding:7px 9px}
+  .chk-res{font-size:13px;margin-top:6px;min-height:19px}
+  .chk-res.ok{color:var(--wife);font-weight:600}
+  .chk-res.ng{color:var(--danger);font-weight:600}
   .menu button{
     display:flex;width:100%;text-align:left;font:inherit;font-size:15px;background:transparent;
     border:none;border-bottom:1px solid var(--line2);padding:15px 4px;cursor:pointer;color:var(--ink);gap:10px;
@@ -196,12 +208,14 @@
 
 <div class="toast" id="toast"></div>
 
-<!-- CSV sheet -->
+<!-- paste sheet -->
 <dialog id="dlg-csv">
-  <div class="sh-h"><span id="csv-ttl">CSVを貼り付け</span><button class="x" data-close>×</button></div>
+  <div class="sh-h"><span id="csv-ttl">貼り付け</span><span id="mode" class="modebadge"></span><button class="x" data-close>×</button></div>
   <div class="sh-b">
-    <p style="margin:0 0 8px;font-size:13px;color:var(--sub)">各社サイトのCSVの中身をそのまま貼り付けてください。1行目が見出しなら自動で判定します。</p>
-    <textarea class="csv" id="csv" placeholder="利用日,利用店名,利用金額&#10;2026/08/03,スーパー〇〇,4280"></textarea>
+    <p style="margin:0 0 8px;font-size:13px;color:var(--sub)">
+      明細をコピーして貼り付けてください。<b>CSVでも、明細画面のコピーでも、スクショの文字（ライブテキスト）でも</b>そのままで大丈夫です。形式は自動で判別します。
+    </p>
+    <textarea class="csv" id="csv" placeholder="例）&#10;8/3&#10;スーパーマルナカ 土佐店&#10;4,280円&#10;8/5&#10;ドラッグストア&#10;1,980円"></textarea>
     <div class="maps" id="maps" hidden>
       <label>日付<select id="map-d"></select></label>
       <label>品目<select id="map-n"></select></label>
@@ -209,6 +223,16 @@
       <label><input type="checkbox" id="map-head" checked style="width:17px;height:17px">見出しあり</label>
     </div>
     <div class="prev" id="prev" hidden></div>
+    <div class="chk" id="chk" hidden>
+      <div class="chk-row">
+        <span>取込の合計</span><b id="chk-total">¥0</b>
+      </div>
+      <div class="chk-row">
+        <label for="chk-in">明細画面の合計を入力して照合</label>
+        <input id="chk-in" type="text" inputmode="numeric" placeholder="任意">
+      </div>
+      <div class="chk-res" id="chk-res"></div>
+    </div>
   </div>
   <div class="sh-f">
     <button data-close>キャンセル</button>
@@ -428,7 +452,7 @@ function render(){
       items.forEach(function(it){ body.push(makeRow(it, items, true)); });
     }
     body.push(el("div",{class:"acts"},[
-      el("button",{class:"key", onclick:function(){ openCsv(def.key, def.name); }},["CSV貼り付け"]),
+      el("button",{class:"key", onclick:function(){ openCsv(def.key, def.name); }},["貼り付けて取込"]),
       el("button",{onclick:function(){ items.push({d:"",n:"",a:0,w:true}); render(); focusLast(def.key); }},["＋ 行"]),
       el("span",{class:"spacer"}),
       el("button",{onclick:function(){ items.forEach(function(x){x.w=true;}); render(); }},["全✓"]),
@@ -527,8 +551,9 @@ function claimText(){
   return L.join("\n");
 }
 
-// ---- CSV ----
-var csvCtx = {key:null, rows:[], parsed:[]};
+// ---- 取り込み（CSV / 自由テキスト 両対応） ----
+var pasteCtx = {key:null, mode:"", rows:[], parsed:[]};
+
 function splitLine(line, d){
   var out = [], cur = "", q = false;
   for(var i=0;i<line.length;i++){
@@ -549,14 +574,25 @@ function parseCsv(text){
   var d = (lines[0].match(/\t/g)||[]).length > (lines[0].match(/,/g)||[]).length ? "\t" : ",";
   return lines.map(function(l){ return splitLine(l, d); });
 }
+// 区切りデータらしいか判定：過半数の行が同じ数(2以上)の区切り文字を持つ
+function looksDelimited(text){
+  var lines = String(text).replace(/\r\n?/g,"\n").split("\n").filter(function(l){ return l.trim() !== ""; });
+  if(lines.length < 2) return false;
+  ["\t", ","].forEach(function(){});
+  var best = false;
+  ["\t", ","].forEach(function(d){
+    var counts = lines.map(function(l){ return (l.split(d).length - 1); });
+    var mode = {}, top = 0, topN = 0;
+    counts.forEach(function(c){ mode[c] = (mode[c]||0)+1; if(mode[c] > topN){ topN = mode[c]; top = c; } });
+    if(top >= 2 && topN >= Math.max(2, Math.ceil(lines.length * 0.6))) best = true;
+  });
+  return best;
+}
 function guessCols(rows){
   var h = rows[0] || [], g = {d:-1,n:-1,a:-1,head:false};
-  // 日付
   var rD = /(利用日|ご利用日|日付|取引日|決済日|date)/i;
-  // 品目：強い手がかり（店名そのもの）を優先し、弱い手がかり（内容・摘要）は後回し
   var rN1 = /(取引先|利用店名|ご利用店名|ご利用先|加盟店|店名|商品名|利用先)/;
   var rN2 = /(取引内容|内容|摘要|品目|明細|説明|備考)/;
-  // 金額：入金・残高・手数料・レート等は除外し、支出額を優先
   var rAx = /(入金|残高|レート|ポイント|手数料|回数|海外)/;
   var rA1 = /(出金金額|利用金額|ご利用金額|ご請求金額|支払金額|請求額|支払総額)/;
   var rA2 = /(金額|amount)/i;
@@ -569,7 +605,6 @@ function guessCols(rows){
 
   g.head = (g.d >= 0 || g.n >= 0 || g.a >= 0);
   if(!g.head){
-    // 見出し行なし（三井住友カード等）：1行目の中身から推定
     (rows[0]||[]).forEach(function(v,i){
       if(g.d < 0 && /^\d{2,4}[\/\-年]\d{1,2}[\/\-月]\d{1,2}/.test(v)) g.d = i;
       else if(g.n < 0 && v && !/^[\d,¥\\\-\/\.]+$/.test(v) && !/^\d+回/.test(v) && !/^(本人|家族)/.test(v)) g.n = i;
@@ -580,52 +615,202 @@ function guessCols(rows){
   if(g.a < 0) g.a = (rows[0]||[]).length - 1;
   return g;
 }
+
+// ===== 自由テキスト解析 =====
+function zen2han(s){
+  return String(s).replace(/[０-９]/g, function(c){ return String.fromCharCode(c.charCodeAt(0)-0xFEE0); })
+                  .replace(/[，、]/g, ",").replace(/[￥]/g, "¥").replace(/[　]/g, " ")
+                  .replace(/[／∕⁄]/g, "/").replace(/[．]/g, ".").replace(/[－‐]/g, "-")
+                  .replace(/[＋]/g, "+").replace(/[：]/g, ":").replace(/[（]/g, "(").replace(/[）]/g, ")");
+}
+var RE_DATE = /(20\d{2}|\d{2})[\/\.\-年](\d{1,2})[\/\.\-月](\d{1,2})日?|(?:^|[^\d])(\d{1,2})[\/\.月](\d{1,2})日?(?![\d\/\.])/;
+var RE_AMT  = /[¥\$]?\s*[-+]?\d{1,3}(?:,\d{3})+(?:\s*円)?|[¥]\s*[-+]?\d+|[-+]?\d+\s*円/;
+// 明細行として無視する行
+var RE_NOISE = /^(\d+回(払い)?|一括|一回払い|リボ|分割|ボーナス|本人|家族|会員|ご本人|合計|小計|請求(金額|額)?|お支払[い]?(金額|方法)?|支払(い|方法|区分|総額|金額)?|チャージ|送る|送金|受け取る|受取|出金|入金|残高|取引履歴|利用者|ご利用者|ポイント|獲得|還元|明細|一覧|もっと見る|詳細|閉じる|戻る|次へ|前へ|検索|絞り込み|並び替え|未確定|確定|今月|先月|翌月|カード|通貨|JPY|円)$/;
+var RE_LABEL_AMT = /^(利用金額|ご利用金額|支払金額|お支払金額|支払総額|請求額|金額|合計|出金金額)\s*[:：]?\s*$/;
+
+function normDate(m){
+  var mm, dd;
+  if(m[2] != null && m[3] != null){ mm = m[2]; dd = m[3]; }
+  else { mm = m[4]; dd = m[5]; }
+  if(mm == null || dd == null) return "";
+  return String(Number(mm)).padStart(2,"0") + "/" + String(Number(dd)).padStart(2,"0");
+}
+function classify(raw, ledger){
+  var s = zen2han(raw).trim();
+  if(!s) return {t:"skip"};
+  var dm = s.match(RE_DATE);
+  var am = s.match(RE_AMT);
+  var rest = s;
+  if(dm) rest = rest.replace(dm[0], " ");
+  if(am) rest = rest.replace(am[0], " ");
+  rest = rest.replace(/[\s\|｜,]+/g," ").trim();
+  // ポイント表記は金額扱いしない
+  if(am && /(\d\s*(P|pt|ポイント))/i.test(s) && !/円|¥/.test(am[0])) am = null;
+  var hasAmt = !!am;
+  var sign = 0;
+  if(hasAmt){
+    if(/^\s*[¥\$]?\s*\+/.test(am[0])) sign = 1;
+    else if(/^\s*[¥\$]?\s*-/.test(am[0])) sign = -1;
+  }
+  var amt = hasAmt ? num(am[0]) : 0;
+  if(ledger){
+    if(sign > 0) return {t:"skip"};          // 入金・チャージは支出でない
+    if(sign < 0) amt = Math.abs(amt);        // 出金は支出として正の値に
+  }
+  if(hasAmt && amt === 0) hasAmt = false;
+  var restIsLabel = RE_LABEL_AMT.test(rest) || RE_NOISE.test(rest) || rest === "";
+  if(dm && hasAmt) return {t:"rec", d:normDate(dm), n:restIsLabel ? "" : rest, a:amt};
+  if(hasAmt) return {t:"amt", a:amt, n:restIsLabel ? "" : rest};
+  if(dm) return {t:"date", d:normDate(dm), n:restIsLabel ? "" : rest};
+  if(RE_NOISE.test(s) || s.length > 44) return {t:"skip"};
+  if(/^[\s\-–—=・･:：\|｜\*\+>＞<＜]+$/.test(s)) return {t:"skip"};
+  return {t:"text", n:s};
+}
+function parseFreeText(text){
+  var lines = String(text).replace(/\r\n?/g,"\n").split("\n");
+  // 「+1,000円 / -1,000円」形式（PayPay等の入出金表記）かどうか
+  var ledger = /[＋+]\s*[¥￥]?\s*[\d０-９][\d０-９,，]*\s*円?/.test(text);
+  var out = [], curDate = "", nameBuf = [], amtConsumed = false;
+
+  function pushRec(d, n, a){
+    if(!a) return;
+    out.push({d: d || curDate || "", n: (n||"").slice(0,40), a: a});
+  }
+  for(var i=0;i<lines.length;i++){
+    var c = classify(lines[i], ledger);
+    if(c.t === "skip") continue;
+    if(c.t === "date"){
+      curDate = c.d;
+      if(c.n) nameBuf.push(c.n);
+      amtConsumed = false;
+      continue;
+    }
+    if(c.t === "text"){ nameBuf.push(c.n); amtConsumed = false; continue; }
+    if(c.t === "rec"){
+      curDate = c.d;
+      var nm = c.n || nameBuf[nameBuf.length-1] || "";
+      pushRec(c.d, nm, c.a);
+      nameBuf = []; amtConsumed = true;
+      continue;
+    }
+    if(c.t === "amt"){
+      // 直前に名前も日付も新しく来ていないのに金額が続く場合は重複表示とみなす
+      if(amtConsumed && !c.n) continue;
+      var name = c.n || nameBuf[nameBuf.length-1] || "";
+      if(!name){
+        // 金額が先に来るレイアウト：次のテキスト行を名前に使う
+        for(var j=i+1;j<lines.length;j++){
+          var nx = classify(lines[j], ledger);
+          if(nx.t === "text"){ name = nx.n; lines[j] = ""; break; }
+          if(nx.t !== "skip") break;
+        }
+      }
+      pushRec(curDate, name, c.a);
+      nameBuf = []; amtConsumed = true;
+      continue;
+    }
+  }
+  return out;
+}
+
+// ===== プレビュー =====
 function fill(sel, cols, v){
   sel.textContent = "";
   sel.appendChild(el("option",{value:"-1"},["なし"]));
   cols.forEach(function(c,i){ sel.appendChild(el("option",{value:String(i)},[(i+1)+"列 "+String(c||"").slice(0,10)])); });
   sel.value = String(v);
 }
+function buildParsed(){
+  if(pasteCtx.mode === "csv"){
+    var rows = pasteCtx.rows;
+    var di = +document.getElementById("map-d").value;
+    var ni = +document.getElementById("map-n").value;
+    var ai = +document.getElementById("map-a").value;
+    var skip = document.getElementById("map-head").checked ? 1 : 0;
+    return rows.slice(skip).map(function(r){
+      return {d: di >= 0 ? (r[di]||"") : "", n: ni >= 0 ? (r[ni]||"") : "", a: ai >= 0 ? num(r[ai]) : 0};
+    }).filter(function(x){ return x.a !== 0; });
+  }
+  return parseFreeText(document.getElementById("csv").value);
+}
 function prevRefresh(){
-  var rows = csvCtx.rows, prev = document.getElementById("prev"), ok = document.getElementById("csv-ok");
-  if(!rows.length){ prev.hidden = true; ok.disabled = true; return; }
-  var di = +document.getElementById("map-d").value;
-  var ni = +document.getElementById("map-n").value;
-  var ai = +document.getElementById("map-a").value;
-  var skip = document.getElementById("map-head").checked ? 1 : 0;
-  var data = rows.slice(skip).map(function(r){
-    return {d: di >= 0 ? (r[di]||"") : "", n: ni >= 0 ? (r[ni]||"") : "", a: ai >= 0 ? num(r[ai]) : 0};
-  }).filter(function(x){ return x.a !== 0; });
-  csvCtx.parsed = data;
-
+  var prev = document.getElementById("prev"), ok = document.getElementById("csv-ok");
+  var data = buildParsed();
+  pasteCtx.parsed = data;
+  if(!data.length){
+    prev.hidden = true; ok.disabled = true;
+    document.getElementById("chk").hidden = true;
+    return;
+  }
+  var total = data.reduce(function(s,x){ return s + x.a; }, 0);
   var tb = el("tbody");
-  data.slice(0,50).forEach(function(x){
-    tb.appendChild(el("tr",{},[el("td",{},[x.d]),el("td",{},[x.n]),el("td",{class:"n"},[yen(x.a)])]));
+  data.slice(0,80).forEach(function(x){
+    tb.appendChild(el("tr",{},[
+      el("td",{style:"color:var(--sub)"},[x.d]),
+      el("td",{},[x.n || "（品目なし）"]),
+      el("td",{class:"n"},[yen(x.a)])
+    ]));
   });
   prev.textContent = "";
+  prev.appendChild(el("div",{class:"prevhead"},[
+    el("span",{},[data.length + " 件"]),
+    el("b",{},[yen(total)])
+  ]));
   prev.appendChild(el("table",{},[tb]));
-  prev.appendChild(el("div",{style:"padding:7px 9px;color:var(--sub)"},[data.length + " 件を取り込みます"]));
+  if(data.length > 80) prev.appendChild(el("div",{style:"padding:6px 9px;color:var(--sub)"},["ほか " + (data.length-80) + " 件"]));
   prev.hidden = false;
-  ok.disabled = data.length === 0;
+  ok.disabled = false;
+  document.getElementById("chk").hidden = false;
+  document.getElementById("chk-total").textContent = yen(total);
+  verifyTotal();
 }
-function onCsvInput(){
-  var rows = parseCsv(document.getElementById("csv").value);
-  csvCtx.rows = rows;
-  if(!rows.length){ document.getElementById("maps").hidden = true; prevRefresh(); return; }
-  var g = guessCols(rows), cols = rows[0];
-  fill(document.getElementById("map-d"), cols, g.d);
-  fill(document.getElementById("map-n"), cols, g.n);
-  fill(document.getElementById("map-a"), cols, g.a);
-  document.getElementById("map-head").checked = g.head;
-  document.getElementById("maps").hidden = false;
+function verifyTotal(){
+  var exp = num(document.getElementById("chk-in").value);
+  var got = (pasteCtx.parsed||[]).reduce(function(s,x){ return s + x.a; }, 0);
+  var r = document.getElementById("chk-res");
+  if(!exp){ r.textContent = ""; r.className = "chk-res"; return; }
+  var diff = got - exp;
+  if(diff === 0){ r.textContent = "一致しています"; r.className = "chk-res ok"; }
+  else { r.textContent = "差額 " + yen(Math.abs(diff)) + (diff > 0 ? "（取込が多い）" : "（取込が足りない）"); r.className = "chk-res ng"; }
+}
+function onPasteInput(){
+  var text = document.getElementById("csv").value;
+  var maps = document.getElementById("maps");
+  var badge = document.getElementById("mode");
+  if(!text.trim()){
+    pasteCtx.mode = ""; pasteCtx.rows = [];
+    maps.hidden = true; badge.textContent = "";
+    prevRefresh(); return;
+  }
+  if(looksDelimited(text)){
+    pasteCtx.mode = "csv";
+    var rows = parseCsv(text);
+    pasteCtx.rows = rows;
+    var g = guessCols(rows), cols = rows[0];
+    fill(document.getElementById("map-d"), cols, g.d);
+    fill(document.getElementById("map-n"), cols, g.n);
+    fill(document.getElementById("map-a"), cols, g.a);
+    document.getElementById("map-head").checked = g.head;
+    maps.hidden = false;
+    badge.textContent = "CSVとして解析";
+  } else {
+    pasteCtx.mode = "text";
+    pasteCtx.rows = [];
+    maps.hidden = true;
+    badge.textContent = "画面コピーとして解析";
+  }
   prevRefresh();
 }
 function openCsv(key, name){
-  csvCtx = {key:key, rows:[], parsed:[]};
+  pasteCtx = {key:key, mode:"", rows:[], parsed:[]};
   document.getElementById("csv").value = "";
-  document.getElementById("csv-ttl").textContent = name + " にCSVを貼り付け";
+  document.getElementById("chk-in").value = "";
+  document.getElementById("csv-ttl").textContent = name + " に貼り付け";
+  document.getElementById("mode").textContent = "";
   document.getElementById("maps").hidden = true;
   document.getElementById("prev").hidden = true;
+  document.getElementById("chk").hidden = true;
   document.getElementById("csv-ok").disabled = true;
   document.getElementById("dlg-csv").showModal();
 }
@@ -665,17 +850,18 @@ function init(){
     d.addEventListener("click", function(e){ if(e.target === d) d.close(); });
   });
 
-  document.getElementById("csv").addEventListener("input", onCsvInput);
+  document.getElementById("csv").addEventListener("input", onPasteInput);
+  document.getElementById("chk-in").addEventListener("input", verifyTotal);
   ["map-d","map-n","map-a","map-head"].forEach(function(id){
     document.getElementById(id).addEventListener("change", prevRefresh);
   });
   document.getElementById("csv-ok").addEventListener("click", function(){
-    var items = state.sources[csvCtx.key].items;
-    (csvCtx.parsed||[]).forEach(function(x){ items.push({d:x.d, n:x.n, a:x.a, w:true}); });
-    state.open[csvCtx.key] = true;
+    var items = state.sources[pasteCtx.key].items;
+    (pasteCtx.parsed||[]).forEach(function(x){ items.push({d:x.d, n:x.n, a:x.a, w:true}); });
+    state.open[pasteCtx.key] = true;
     document.getElementById("dlg-csv").close();
     render();
-    toast((csvCtx.parsed||[]).length + " 件を取り込みました");
+    toast((pasteCtx.parsed||[]).length + " 件を取り込みました");
   });
 
   document.getElementById("btn-claim").addEventListener("click", function(){
@@ -735,7 +921,7 @@ function init(){
 if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
 else init();
 
-window.__app = {get state(){return state;}, render:render, sum:sum, parseCsv:parseCsv, guessCols:guessCols, num:num, claimText:claimText, grandTotals:grandTotals};
+window.__app = {get state(){return state;}, render:render, sum:sum, parseCsv:parseCsv, guessCols:guessCols, num:num, claimText:claimText, grandTotals:grandTotals, parseFreeText:parseFreeText, looksDelimited:looksDelimited, classify:classify};
 })();
 </script>
 </body>
